@@ -1,4 +1,4 @@
-# Masten Kill walkthrough
+# Prototype Village walkthrough
 
 Published desktop and mobile village experience. This repository contains only the
 compiled website runtime. Original Blender scenes, purchased libraries, credentials,
