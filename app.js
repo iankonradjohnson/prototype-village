@@ -80,12 +80,31 @@ $('enter').onclick=()=>{started=true;$('loading').hidden=true;$('toolbar').hidde
 $('walk').onclick=beginWalk;$('helpButton').onclick=()=>{clearInput();controls.unlock();$('instructions').hidden=false;$('mobileControls').hidden=true;};$('closeHelp').onclick=()=>{$('instructions').hidden=true;$('mobileControls').hidden=!mobileMode||!started;};$('resume').onclick=()=>{$('instructions').hidden=true;$('mobileControls').hidden=!mobileMode||!started;beginWalk();};$('returnStreet').onclick=()=>visit(0);$('places').onchange=e=>{visit(+e.target.value);e.target.blur();};$('stats').onclick=()=>$('performance').hidden=!$('performance').hidden;
 $('quality').onchange=e=>{quality=e.target.value;e.target.blur();renderer.setPixelRatio(Math.min(devicePixelRatio,mobileMode?(quality==='light'?.75:1):(quality==='high'?1.75:quality==='light'?1:1.35)));updateLODs();sun.shadow.needsUpdate=true;};
 window.addEventListener('resize',()=>{clearInput();camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+// Botaniq procedural colors do not survive the lightweight browser export.
+// Supply botanical colors only for its untextured neutral placeholder materials.
+function plantPreviewColor(m){
+ if(m.texture||!m.name.startsWith('bq_')||!m.color.every(c=>Math.abs(c-.7)<.001))return new THREE.Color().setRGB(...m.color);
+ const n=m.name.toLowerCase();let hex=0x53733a;
+ if(n.includes('bark'))hex=0x66503a;
+ else if(n.includes('stem'))hex=0x476532;
+ else if(n.includes('grass'))hex=0x587d35;
+ else if(n.includes('flower')){
+  if(n.includes('inside'))hex=0x54321d;
+  else if(/rudbeck|rudback|sunflower|verbascum/.test(n))hex=0xe4ae32;
+  else if(/lavender|cornflower|bellflower|hosta/.test(n))hex=0x8c73b9;
+  else if(/rose|digitalis|thymus/.test(n))hex=0xc76587;
+  else if(n.includes('achillea'))hex=0xd6b674;
+  else if(n.includes('phalaris'))hex=0xa39a62;
+  else hex=0xd9c691;
+ }
+ return new THREE.Color(hex);
+}
 async function load(){
  data=await(await fetch(dataRoot+'scene.json',{cache:'no-cache'})).json();progress('Loading village geometry…',12);
  const [buffer,navbuffer]=await Promise.all([unpack((data.geometryChunks||['geometry.bin.gz']).map(file=>dataRoot+file+(data.runtimeVersion?'?v='+data.runtimeVersion:'')),loaded=>{const total=data.stats.compressedGeometryBytes;progress(`Loading village… ${Math.round(loaded/1e6)} / ${Math.round(total/1e6)} MB`,12+Math.min(28,loaded/total*28));}),unpack('./data/navigation.bin.gz')]);nav=new Uint8Array(navbuffer);progress('Preparing materials and planting…',40);
  const manager=new THREE.LoadingManager(),loader=new THREE.TextureLoader(manager),textures=new Map();const texPromises=[];
  const materials=data.materials.map(m=>{let map=null;if(m.texture){if(!textures.has(m.texture)){const texture=loader.load(dataRoot+m.texture,()=>{},undefined,()=>textureFails.push(m.texture));texture.colorSpace=THREE.SRGBColorSpace;texture.wrapS=texture.wrapT=THREE.RepeatWrapping;texture.anisotropy=Math.min(mobileMode?2:4,renderer.capabilities.getMaxAnisotropy());textures.set(m.texture,texture);}map=textures.get(m.texture);}
-  const mat=new THREE.MeshStandardMaterial({color:new THREE.Color().setRGB(...m.color),map,roughness:m.roughness,metalness:0,side:THREE.DoubleSide,alphaTest:m.alphaTest,transparent:false});
+  const mat=new THREE.MeshStandardMaterial({color:plantPreviewColor(m),map,roughness:m.roughness,metalness:0,side:THREE.DoubleSide,alphaTest:m.alphaTest,transparent:false});
   if(m.worldUV){mat.onBeforeCompile=shader=>{shader.vertexShader=shader.vertexShader.replace('#include <uv_vertex>','#include <uv_vertex>\n#ifdef USE_MAP\nvMapUv = (modelMatrix * vec4(position, 1.0)).xz * 0.85;\n#endif');};mat.customProgramCacheKey=()=> 'world-ground-uv';}
   return mat;});
  nearSources=await(await fetch(dataRoot+'near.json',{cache:'no-cache'})).json();
