@@ -22,6 +22,7 @@ sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.camera.left=-85
 const worldRotation=new THREE.Matrix4().makeRotationX(-Math.PI/2), rows=[], keys=new Set();
 let data,nav,ready=false,started=false,overview=false,last=performance.now(),sampleAt=last,frames=0,fps=0,lodAt=0,quality='balanced',drawnLODs=[0,0,0], culled=0,textureFails=[];
 let requestForestHigh=null;
+const forestTrunks=[];
 let nearSources={},nearActive=0;const nearPending=new Set(),nearQueue=[],nearReady=new Set(),nearFailures=new Map(),mobileNearCache=new Map();let mobileWanted=new Set();
 const viewFrustum=new THREE.Frustum(),viewProjection=new THREE.Matrix4();
 function makeGeometry(l,buffer){
@@ -49,7 +50,7 @@ async function unpack(url,onProgress){
 }
 function point(v){return new THREE.Vector3(v[0],v[2],-v[1]);}
 function blockedAt(x,z){const n=data.navigation;const ix=Math.floor((x-n.origin[0])/n.step),iy=Math.floor((-z-n.origin[1])/n.step);if(ix<1||iy<1||ix>=n.width-1||iy>=n.height-1)return true;return nav[iy*n.width+ix]!==0;}
-function canStand(x,z){const b=data.navigation.bounds||[-71,-39,55,79];if(x<b[0]||x>b[2]||-z<b[1]||-z>b[3])return false;for(const [dx,dz]of [[0,0],[.19,0],[-.19,0],[0,.19],[0,-.19]])if(blockedAt(x+dx,z+dz))return false;return true;}
+function canStand(x,z){const b=data.navigation.bounds||[-71,-39,55,79];if(x<b[0]||x>b[2]||-z<b[1]||-z>b[3])return false;if(forestTrunks.some(t=>(x-t.x)**2+(z-t.z)**2<t.radius**2))return false;for(const [dx,dz]of [[0,0],[.19,0],[-.19,0],[0,.19],[0,-.19]])if(blockedAt(x+dx,z+dz))return false;return true;}
 function nearestClear(p){if(canStand(p.x,p.z))return p;for(let r=.25;r<4;r+=.25)for(let a=0;a<Math.PI*2;a+=Math.PI/8){let x=p.x+Math.cos(a)*r,z=p.z+Math.sin(a)*r;if(canStand(x,z))return new THREE.Vector3(x,p.y,z);}return p;}
 function visit(index){if(!ready)return;input.reset();keys.clear();const view=data.cameras[index];overview=view.overview;let pos=point(view.position);if(!overview){pos.y=1.72;}camera.position.copy(pos);camera.lookAt(point(view.target));camera.updateMatrixWorld();$('location').textContent=view.name.replace(/^\d+ /,'');$('places').value=index;$('walk').textContent=overview?'Return to street ↗':'Walk here ↗';updateLODs();sun.shadow.needsUpdate=true;}
 function beginWalk(){if(overview)visit(0);if(!mobileMode)controls.lock();}
@@ -109,7 +110,7 @@ function createMaterials(specs,root,loader){
 }
 async function loadWoodland(loader){
  const root='./data/forest/';
- const response=await fetch(root+'scene.json?v=forest-1');if(!response.ok)throw new Error('Woodland could not load');
+ const response=await fetch(root+'scene.json?v=forest-2');if(!response.ok)throw new Error('Woodland could not load');
  const forest=await response.json();
  const requested=[1,2];const buffers={};
  await Promise.all(requested.map(async level=>{buffers[level]=await unpack(forest.geometryFiles[level].map(file=>root+file));}));
@@ -118,6 +119,7 @@ async function loadWoodland(loader){
  for(const levels of geos)levels[0]=levels[1];
  if(!mobileMode)requestForestHigh=()=>{requestForestHigh=null;unpack(forest.geometryFiles[0].map(file=>root+file)).then(buffer=>{forest.geometries.forEach((g,i)=>{geos[i][0]=makeGeometry(g.levels[0],buffer);});updateLODs();}).catch(error=>console.warn('Higher woodland detail unavailable',error.message));};
  for(const o of forest.objects){
+  forestTrunks.push({x:o.matrix[3],z:-o.matrix[7],radius:o.trunkRadius||.8});
   const g=forest.geometries[o.mesh],mesh=new THREE.Mesh(geos[o.mesh][2],g.materials.map(i=>mats[i]));
   mesh.name=o.name;mesh.applyMatrix4(new THREE.Matrix4().set(...o.matrix).premultiply(worldRotation));mesh.matrixAutoUpdate=false;mesh.updateMatrixWorld();
   mesh.castShadow=false;mesh.receiveShadow=true;scene.add(mesh);
