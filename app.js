@@ -13,14 +13,15 @@ renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(deviceP
 renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.15;
 renderer.shadowMap.enabled=!mobileMode;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
 $('world').appendChild(renderer.domElement);
-const scene=new THREE.Scene();scene.background=new THREE.Color('#b7cbd0');scene.fog=new THREE.Fog('#b7cbd0',mobileMode?50:125,mobileMode?120:245);
-const camera=new THREE.PerspectiveCamera(65,innerWidth/innerHeight,.08,mobileMode?145:300);
+const scene=new THREE.Scene();scene.background=new THREE.Color('#b7cbd0');scene.fog=new THREE.Fog('#b7cbd0',mobileMode?80:150,mobileMode?210:320);
+const camera=new THREE.PerspectiveCamera(65,innerWidth/innerHeight,.08,mobileMode?240:360);
 const controls=new PointerLockControls(camera,renderer.domElement);controls.pointerSpeed=.72;
 const hemi=new THREE.HemisphereLight('#e4efff','#767251',2);scene.add(hemi);
 const sun=new THREE.DirectionalLight('#fff0ca',3.1);sun.position.set(-40,85,5);sun.target.position.set(-15,0,-15);scene.add(sun,sun.target);
 sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.camera.left=-85;sun.shadow.camera.right=85;sun.shadow.camera.top=95;sun.shadow.camera.bottom=-95;sun.shadow.camera.near=1;sun.shadow.camera.far=220;sun.shadow.bias=-.0002;sun.shadow.normalBias=.04;
 const worldRotation=new THREE.Matrix4().makeRotationX(-Math.PI/2), rows=[], keys=new Set();
 let data,nav,ready=false,started=false,overview=false,last=performance.now(),sampleAt=last,frames=0,fps=0,lodAt=0,quality='balanced',drawnLODs=[0,0,0], culled=0,textureFails=[];
+let requestForestHigh=null;
 let nearSources={},nearActive=0;const nearPending=new Set(),nearQueue=[],nearReady=new Set(),nearFailures=new Map(),mobileNearCache=new Map();let mobileWanted=new Set();
 const viewFrustum=new THREE.Frustum(),viewProjection=new THREE.Matrix4();
 function makeGeometry(l,buffer){
@@ -62,9 +63,9 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)clearInput(
 window.addEventListener('keydown',e=>{if(['SELECT','INPUT'].includes(document.activeElement.tagName))return;if(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','ShiftLeft','ShiftRight'].includes(e.code)){const first=!keys.has(e.code);keys.add(e.code);if(first)move(.03);e.preventDefault();}if(e.code==='KeyR'&&ready)visit(0);});
 window.addEventListener('keyup',e=>keys.delete(e.code));
 function updateLODs(){const mobileCandidates=[];camera.updateMatrixWorld();viewProjection.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);viewFrustum.setFromProjectionMatrix(viewProjection);drawnLODs=[0,0,0];culled=0;let factor=(quality==='high'?1.65:quality==='light'?.62:1)*(mobileMode?.65:1);
- for(const r of rows){const dist=Math.max(0,camera.position.distanceTo(r.center)-r.radius*.45);let near=r.plant?(r.radius>3?23:9):29,mid=r.plant?(r.radius>3?58:23):72,far=r.groundcover?36:r.plant&&r.radius<3?75:260;if(r.groundcover){near=6;mid=16;}
-  const level=dist<near*factor?0:dist<mid*factor?1:2,visible=(dist<far*factor||!r.plant)&&(!mobileMode||dist<(r.groundcover?20:r.plant&&r.radius<3?40:115));
-  r.mesh.visible=visible;if(!visible){culled++;continue;}drawnLODs[level]++;if(r.level!==level||r.mesh.geometry!==r.geometries[level]){r.mesh.geometry=r.geometries[level];r.level=level;}if(level===0&&r.plant&&viewFrustum.intersectsObject(r.mesh)){if(mobileMode&&!r.groundcover)mobileCandidates.push({r,dist});else if(!mobileMode)requestNear(r);}
+ for(const r of rows){const dist=Math.max(0,camera.position.distanceTo(r.center)-r.radius*.45);let near=r.plant?(r.radius>3?23:9):29,mid=r.plant?(r.radius>3?58:23):72,far=r.groundcover?36:r.plant&&r.radius<3?75:260;if(r.groundcover){near=6;mid=16;}if(r.forest){near=35;mid=95;far=340;}
+  const level=dist<near*factor?0:dist<mid*factor?1:2,visible=(dist<far*factor||!r.plant)&&(!mobileMode||dist<(r.forest?215:r.groundcover?20:r.plant&&r.radius<3?40:115));
+  r.mesh.visible=visible;if(!visible){culled++;continue;}drawnLODs[level]++;if(r.level!==level||r.mesh.geometry!==r.geometries[level]){r.mesh.geometry=r.geometries[level];r.level=level;}if(level===0&&r.plant&&viewFrustum.intersectsObject(r.mesh)){if(r.forest){requestForestHigh?.();}else if(mobileMode&&!r.groundcover)mobileCandidates.push({r,dist});else if(!mobileMode)requestNear(r);}
  }
  if(mobileMode){mobileCandidates.sort((a,b)=>a.dist-b.dist);const chosen=[];mobileWanted=new Set();for(const item of mobileCandidates){if(mobileWanted.has(item.r.meshId))continue;mobileWanted.add(item.r.meshId);chosen.push(item.r);if(chosen.length===40)break;}for(const r of chosen){if(mobileNearCache.has(r.meshId)){const g=mobileNearCache.get(r.meshId);mobileNearCache.delete(r.meshId);mobileNearCache.set(r.meshId,g);}requestNear(r);}trimMobileNear();}
 }
@@ -99,18 +100,42 @@ function plantPreviewColor(m){
  }
  return new THREE.Color(hex);
 }
-async function load(){
- data=await(await fetch(dataRoot+'scene.json',{cache:'no-cache'})).json();progress('Loading village geometry…',12);
- const [buffer,navbuffer]=await Promise.all([unpack((data.geometryChunks||['geometry.bin.gz']).map(file=>dataRoot+file+(data.runtimeVersion?'?v='+data.runtimeVersion:'')),loaded=>{const total=data.stats.compressedGeometryBytes;progress(`Loading village… ${Math.round(loaded/1e6)} / ${Math.round(total/1e6)} MB`,12+Math.min(28,loaded/total*28));}),unpack('./data/navigation.bin.gz')]);nav=new Uint8Array(navbuffer);progress('Preparing materials and planting…',40);
- const manager=new THREE.LoadingManager(),loader=new THREE.TextureLoader(manager),textures=new Map();const texPromises=[];
- const materials=data.materials.map(m=>{let map=null;if(m.texture){if(!textures.has(m.texture)){const texture=loader.load(dataRoot+m.texture,()=>{},undefined,()=>textureFails.push(m.texture));texture.colorSpace=THREE.SRGBColorSpace;texture.wrapS=texture.wrapT=THREE.RepeatWrapping;texture.anisotropy=Math.min(mobileMode?2:4,renderer.capabilities.getMaxAnisotropy());textures.set(m.texture,texture);}map=textures.get(m.texture);}
+function createMaterials(specs,root,loader){
+ const textures=new Map();
+ return specs.map(m=>{let map=null;if(m.texture){if(!textures.has(m.texture)){const texture=loader.load(root+m.texture,()=>{},undefined,()=>textureFails.push(m.texture));texture.colorSpace=THREE.SRGBColorSpace;texture.wrapS=texture.wrapT=THREE.RepeatWrapping;texture.anisotropy=Math.min(mobileMode?2:4,renderer.capabilities.getMaxAnisotropy());textures.set(m.texture,texture);}map=textures.get(m.texture);}
   const mat=new THREE.MeshStandardMaterial({color:plantPreviewColor(m),map,roughness:m.roughness,metalness:0,side:THREE.DoubleSide,alphaTest:m.alphaTest,transparent:false});
   if(m.worldUV){mat.onBeforeCompile=shader=>{shader.vertexShader=shader.vertexShader.replace('#include <uv_vertex>','#include <uv_vertex>\n#ifdef USE_MAP\nvMapUv = (modelMatrix * vec4(position, 1.0)).xz * 0.85;\n#endif');};mat.customProgramCacheKey=()=> 'world-ground-uv';}
   return mat;});
+}
+async function loadWoodland(loader){
+ const root='./data/forest/';
+ const response=await fetch(root+'scene.json?v=forest-1');if(!response.ok)throw new Error('Woodland could not load');
+ const forest=await response.json();
+ const requested=[1,2];const buffers={};
+ await Promise.all(requested.map(async level=>{buffers[level]=await unpack(forest.geometryFiles[level].map(file=>root+file));}));
+ const mats=createMaterials(forest.materials,root,loader);
+ const geos=forest.geometries.map(g=>g.levels.map((l,i)=>i===0?null:makeGeometry(l,buffers[i])));
+ for(const levels of geos)levels[0]=levels[1];
+ if(!mobileMode)requestForestHigh=()=>{requestForestHigh=null;unpack(forest.geometryFiles[0].map(file=>root+file)).then(buffer=>{forest.geometries.forEach((g,i)=>{geos[i][0]=makeGeometry(g.levels[0],buffer);});updateLODs();}).catch(error=>console.warn('Higher woodland detail unavailable',error.message));};
+ for(const o of forest.objects){
+  const g=forest.geometries[o.mesh],mesh=new THREE.Mesh(geos[o.mesh][2],g.materials.map(i=>mats[i]));
+  mesh.name=o.name;mesh.applyMatrix4(new THREE.Matrix4().set(...o.matrix).premultiply(worldRotation));mesh.matrixAutoUpdate=false;mesh.updateMatrixWorld();
+  mesh.castShadow=false;mesh.receiveShadow=true;scene.add(mesh);
+  rows.push({...o,meshId:data.geometries.length+o.mesh,center:point(o.center),geometries:geos[o.mesh],fallback:geos[o.mesh][1],mesh,level:2});
+ }
+ const base=rows.find(r=>r.name===forest.ground_override.name);
+ if(base){const g=forest.ground_override;base.mesh.matrix.copy(new THREE.Matrix4().set(...g.matrix).premultiply(worldRotation));base.mesh.matrixWorldNeedsUpdate=true;base.mesh.updateMatrixWorld();base.center=point(g.center);base.radius=g.radius;}
+}
+async function load(){
+ data=await(await fetch(dataRoot+'scene.json',{cache:'no-cache'})).json();progress('Loading village geometry…',12);
+ const [buffer,navbuffer]=await Promise.all([unpack((data.geometryChunks||['geometry.bin.gz']).map(file=>dataRoot+file+(data.runtimeVersion?'?v='+data.runtimeVersion:'')),loaded=>{const total=data.stats.compressedGeometryBytes;progress(`Loading village… ${Math.round(loaded/1e6)} / ${Math.round(total/1e6)} MB`,12+Math.min(28,loaded/total*28));}),unpack('./data/navigation.bin.gz')]);nav=new Uint8Array(navbuffer);progress('Preparing materials and planting…',40);
+ const manager=new THREE.LoadingManager(),loader=new THREE.TextureLoader(manager);
+ const materials=createMaterials(data.materials,dataRoot,loader);
  nearSources=await(await fetch(dataRoot+'near.json',{cache:'no-cache'})).json();
  const geometryCache=new Map();const geometry=data.geometries.map(g=>g.levels.map(l=>{const key=l.offset+':'+l.indexOffset;if(!geometryCache.has(key))geometryCache.set(key,makeGeometry(l,buffer));return geometryCache.get(key);}));
  for(const o of data.objects){const g=data.geometries[o.mesh],mat=g.materials.map(i=>materials[i]);const mesh=new THREE.Mesh(geometry[o.mesh][2],mat);mesh.name=o.name;const matrix=new THREE.Matrix4().set(...o.matrix).premultiply(worldRotation);mesh.applyMatrix4(matrix);mesh.matrixAutoUpdate=false;mesh.updateMatrixWorld();mesh.castShadow=!o.groundcover;mesh.receiveShadow=true;scene.add(mesh);rows.push({...o,meshId:o.mesh,center:point(o.center),geometries:geometry[o.mesh],fallback:geometry[o.mesh][0],mesh,level:2});}
  data.cameras.sort((a,b)=>a.name.localeCompare(b.name));for(const [i,v]of data.cameras.entries()){const option=document.createElement('option');option.value=i;option.textContent=v.name.replace(/^\d+ /,'');$('places').appendChild(option);}
+ progress('Adding the surrounding woodland…',65);await loadWoodland(loader);
  ready=true;visit(0);progress('Finishing textures…',75);
  await new Promise(resolve=>{if(manager.isLoading===false)resolve();else{manager.onLoad=resolve;setTimeout(resolve,12000);}});
  updateLODs();renderer.render(scene,camera);sun.shadow.autoUpdate=false;progress('Ready to explore.',100);$('enter').disabled=false;
